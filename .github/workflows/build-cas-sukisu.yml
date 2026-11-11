@@ -1,0 +1,101 @@
+name: Build cas kernel (MIUI/HyperOS + latest SukiSU)
+
+# 用法：fork ApartTUSITU/kernel_xiaomi_sm8250_mod，把本文件放到
+# android16-aptusitu-new 分支的 .github/workflows/ 下，把 build-cas-sukisu.sh
+# 放到同分支根目录，然后在 Actions 页面选择该分支手动运行。
+on:
+  workflow_dispatch:
+    inputs:
+      sukisu_repo:
+        description: 'SukiSU 仓库 (owner/repo)'
+        required: true
+        default: 'SukiSU-Ultra/SukiSU-Ultra'
+        type: string
+      sukisu_ref:
+        description: 'SukiSU 分支/tag/commit。builtin=官方最新非GKI分支；ApartTUSITU=原项目稳定基线'
+        required: true
+        default: 'builtin'
+        type: string
+      kpm_version:
+        description: 'SukiSU_KernelPatch_patch 版本（KPM 注入用）'
+        required: true
+        default: '0.14.0'
+        type: string
+      toolchain_url:
+        description: 'ZyC-Clang 15 工具链 tar.gz 直链'
+        required: true
+        default: 'https://github.com/ZyCromerZ/Clang/releases/download/15.0.7-20251111-release/Clang-15.0.7-20251111.tar.gz'
+        type: string
+      runner_image:
+        description: 'Runner 镜像（22.04 与该项目原始构建一致；若被弃用改 24.04）'
+        required: true
+        default: 'ubuntu-22.04'
+        type: choice
+        options:
+          - ubuntu-22.04
+          - ubuntu-24.04
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  build:
+    runs-on: ${{ github.event.inputs.runner_image }}
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential git curl wget bison flex zip \
+            bc cpio libssl-dev libelf-dev ccache python3 python-is-python3 tar
+
+      - name: Setup ZyC-Clang toolchain
+        run: |
+          mkdir -p "$HOME/zyc-clang"
+          wget -q --show-progress "${{ inputs.toolchain_url }}" -O "$HOME/zyc-clang/clang.tar.gz"
+          tar -zxvf "$HOME/zyc-clang/clang.tar.gz" -C "$HOME/zyc-clang"
+          ls "$HOME/zyc-clang/bin" | head -20
+          "$HOME/zyc-clang/bin/clang" --version
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache_mikernel
+          key: ccache-cas-${{ inputs.sukisu_ref }}-${{ github.sha }}
+          restore-keys: |
+            ccache-cas-${{ inputs.sukisu_ref }}-
+            ccache-cas-
+
+      - name: Build MIUI/HyperOS kernel for cas
+        env:
+          TARGET_DEVICE: cas
+          SUKISU_REPO: ${{ inputs.sukisu_repo }}
+          SUKISU_REF: ${{ inputs.sukisu_ref }}
+          KPM_VERSION: ${{ inputs.kpm_version }}
+          KERNEL_SOURCE_REF: ${{ github.ref_name }}
+        run: |
+          bash build-cas-sukisu.sh cas
+
+      - name: Print build manifest
+        if: always()
+        run: |
+          test -f build-meta.txt && cat build-meta.txt || true
+
+      - name: Upload flashable zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: cas-MIUI-SukiSU-${{ inputs.sukisu_ref }}
+          path: |
+            Kernel_MIUI_cas_*.zip
+            build-meta.txt
+            out/arch/arm64/boot/Image
+            out/arch/arm64/boot/dtb
+          if-no-files-found: error
+          retention-days: 30
